@@ -42,7 +42,7 @@ gosize.exe [options]
 | `-skiphidden`  | Skip hidden files/dirs (dot-prefix)                             |
 | `-skip`        | Comma-separated glob patterns to skip                           |
 | `-progress`    | Show progress every 2s (default: true)                          |
-| '-json'	     | Output results as JSON instead of tables                        |
+| `-json`	     | Output results as JSON instead of tables                        |
 
 ### Example Run:
 ```PowerShell
