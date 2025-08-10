@@ -33,7 +33,8 @@ go build -o gosize.exe
 
 gosize.exe [options]
 ```
-
+<div align="center"> 
+  
 | Flag           | Description                                                     |
 | -------------- | --------------------------------------------------------------- |
 | `-top`         | Number of largest files/dirs to keep in each list (default: 20) |
@@ -45,6 +46,8 @@ gosize.exe [options]
 | `-skip`        | Comma-separated glob patterns to skip                           |
 | `-progress`    | Show progress every 2s (default: true)                          |
 | `-json`	     | Output results as JSON instead of tables                        |
+
+</div>
 
 ### Example Run:
 ```PowerShell
