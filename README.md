@@ -1,5 +1,11 @@
 # GoSize
 
+[![Go Version](https://img.shields.io/github/go-mod/go-version/xBen-Harveyx/GoSize)](https://golang.org/dl/)
+[![Build](https://img.shields.io/github/actions/workflow/status/xBen-Harveyx/GoSize/go.yml?label=build)](https://github.com/xBen-Harveyx/GoSize/actions)
+[![License](https://img.shields.io/github/license/xBen-Harveyx/GoSize)](LICENSE)
+[![Issues](https://img.shields.io/github/issues/xBen-Harveyx/GoSize)](https://github.com/xBen-Harveyx/GoSize/issues)
+[![Stars](https://img.shields.io/github/stars/xBen-Harveyx/GoSize?style=social)](https://github.com/xBen-Harveyx/GoSize/stargazers)
+
 GoSize is a fast command-line utility written in Go that scans a Windows system and reports the largest directories and files on each drive.  
 It’s designed for quick disk space analysis so you can identify space hogs for cleanup.
 
