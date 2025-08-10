@@ -1,6 +1,4 @@
 <div align="center"> 
-# GoSize
-
 [![Go Version](https://img.shields.io/github/go-mod/go-version/xBen-Harveyx/GoSize)](https://golang.org/dl/)
 [![Build](https://img.shields.io/github/actions/workflow/status/xBen-Harveyx/GoSize/go.yml?label=build)](https://github.com/xBen-Harveyx/GoSize/actions)
 [![License](https://img.shields.io/github/license/xBen-Harveyx/GoSize)](LICENSE)
