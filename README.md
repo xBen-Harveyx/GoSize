@@ -42,6 +42,7 @@ gosize.exe [options]
 | `-skiphidden`  | Skip hidden files/dirs (dot-prefix)                             |
 | `-skip`        | Comma-separated glob patterns to skip                           |
 | `-progress`    | Show progress every 2s (default: true)                          |
+| '-json'	     | Output results as JSON instead of tables                        |
 
 ### Example Run:
 ```PowerShell
@@ -69,6 +70,47 @@ RANK  SIZE      DRIVE%   PATH
 Scanned 481,532 files in 92,418 directories in 42.236s (skipped=23, errors=14)
 ```
 
+### JSON Output
+
+```PowerShell
+.\gosize.exe -roots="C:\" -top=3 -json > report.json
+```
+
+```json
+{
+  "roots": ["C:\\"],
+  "topK": 3,
+  "generated": "2025-08-10T15:21:12-04:00",
+  "duration": "42.236s",
+  "summary": {
+    "filesSeen": 481532,
+    "dirsSeen": 92418,
+    "skipped": 23,
+    "errors": 14
+  },
+  "directories": [
+    {
+      "rank": 1,
+      "sizeBytes": 45475745792,
+      "sizeHuman": "42.37 GB",
+      "drivePercent": 8.47,
+      "drive": "C:\\",
+      "path": "C:\\Users\\John\\AppData\\Local\\Temp"
+    }
+  ],
+  "files": [
+    {
+      "rank": 1,
+      "sizeBytes": 8600938496,
+      "sizeHuman": "8.02 GB",
+      "drivePercent": 1.60,
+      "drive": "C:\\",
+      "path": "C:\\Games\\bigfile.pak"
+    }
+  ]
+}
+```
+
 ## How It Works (High-Level)
 1. **Flag Parsing** – The program reads CLI flags to decide what to scan, how deep to go, and what to skip.
 2. **Root Detection** – If no -roots are specified, it auto-detects all Windows drives (A:\ to Z:\ that exist).
@@ -76,4 +118,6 @@ Scanned 481,532 files in 92,418 directories in 42.236s (skipped=23, errors=14)
 4. **Filtering** – Skips entries based on symlink settings, skip patterns, or hidden flag (if enabled).
 5. **Top-K Tracking** – Maintains min-heaps for the largest files and largest directories.
 6. **Drive Size Lookup** – Uses the Windows API to get total drive capacity for the DRIVE% calculation.
-7. **Output** – Prints two sorted tables (directories, files) with rank, size, % of drive, and path, plus a summary line.
+7. **Output** – Prints either:
+    - Two sorted tables (directories, files) plus a summary, OR
+    - A structured JSON document if -json is set.

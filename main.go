@@ -5,6 +5,7 @@ package main
 // Note: run `go get golang.org/x/sys/windows` once before building.
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -105,15 +106,15 @@ func humanBytes(n int64) string {
 		KB int64 = 1 << (10 * iota)
 		MB
 		GB
-		TB
+		TTB
 		PB
 	)
 	f := func(v float64, unit string) string { return fmt.Sprintf("%.2f %s", v, unit) }
 	switch {
 	case n >= PB:
 		return f(float64(n)/float64(PB), "PB")
-	case n >= TB:
-		return f(float64(n)/float64(TB), "TB")
+	case n >= TTB:
+		return f(float64(n)/float64(TTB), "TB")
 	case n >= GB:
 		return f(float64(n)/float64(GB), "GB")
 	case n >= MB:
@@ -169,6 +170,32 @@ type stats struct {
 	errors    int64
 }
 
+// ########### JSON OUTPUT TYPES ##################
+// jsonRow/jsonResult: shapes the -json output for both lists plus summary.
+type jsonRow struct {
+	Rank         int     `json:"rank"`
+	SizeBytes    int64   `json:"sizeBytes"`
+	SizeHuman    string  `json:"sizeHuman"`
+	DrivePercent float64 `json:"drivePercent,omitempty"` // 0 omitted if unknown
+	Drive        string  `json:"drive,omitempty"`        // e.g., "C:\\"
+	Path         string  `json:"path"`
+}
+
+type jsonResult struct {
+	Roots     []string `json:"roots"`
+	TopK      int      `json:"topK"`
+	Generated string   `json:"generated"`
+	Duration  string   `json:"duration"`
+	Summary   struct {
+		FilesSeen int64 `json:"filesSeen"`
+		DirsSeen  int64 `json:"dirsSeen"`
+		Skipped   int64 `json:"skipped"`
+		Errors    int64 `json:"errors"`
+	} `json:"summary"`
+	Directories []jsonRow `json:"directories"`
+	Files       []jsonRow `json:"files"`
+}
+
 // ########### MAIN: FLAGS, ROOTS, SCAN, PRINT ##################
 func main() {
 	// ----- Flags -----
@@ -181,6 +208,7 @@ func main() {
 		skipHidden  = flag.Bool("skiphidden", false, "skip hidden files and directories")
 		skipGlobs   = flag.String("skip", "", "comma-separated filepath.Match patterns to skip (e.g. \"C:\\\\Windows\\\\*,C:\\\\Program Files\\\\*\")")
 		progress    = flag.Bool("progress", true, "periodically print progress to stderr")
+		jsonOut     = flag.Bool("json", false, "output results as JSON")
 	)
 	flag.Parse()
 
@@ -274,10 +302,59 @@ func main() {
 	wg.Wait()
 	close(done)
 
-	// ----- DRIVE% helper cache -----
+	// ----- Common post-scan values -----
 	dsc := newDriveSpaceCache() // Total bytes per volume; queried once per drive.
+	ff := atomic.LoadInt64(&s.filesSeen)
+	dd := atomic.LoadInt64(&s.dirsSeen)
+	sk := atomic.LoadInt64(&s.skipped)
+	er := atomic.LoadInt64(&s.errors)
+	elapsed := time.Since(start).Truncate(time.Millisecond)
 
-	// ----- Print: Directories -----
+	// ----- JSON output (if requested) -----
+	if *jsonOut {
+		toRows := func(items []item) []jsonRow {
+			out := make([]jsonRow, 0, len(items))
+			for i, it := range items {
+				tot := dsc.totalFor(it.Path)
+				pct := 0.0
+				if tot > 0 {
+					pct = (float64(it.Size) / float64(tot)) * 100
+				}
+				out = append(out, jsonRow{
+					Rank:         i + 1,
+					SizeBytes:    it.Size,
+					SizeHuman:    humanBytesFixed(it.Size),
+					DrivePercent: pct,
+					Drive:        volumeRoot(it.Path),
+					Path:         it.Path,
+				})
+			}
+			return out
+		}
+
+		res := jsonResult{
+			Roots:       roots,
+			TopK:        cfg.topK,
+			Generated:   time.Now().Format(time.RFC3339),
+			Duration:    elapsed.String(),
+			Directories: toRows(dirTop.sortedDesc()),
+			Files:       toRows(fileTop.sortedDesc()),
+		}
+		res.Summary.FilesSeen = ff
+		res.Summary.DirsSeen = dd
+		res.Summary.Skipped = sk
+		res.Summary.Errors = er
+
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(res); err != nil {
+			fmt.Fprintln(os.Stderr, "failed to encode JSON:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// ----- Plain-text output (tabwriter tables) -----
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
 	fmt.Println()
 	fmt.Println("Largest Directories")
@@ -293,7 +370,6 @@ func main() {
 	}
 	w.Flush()
 
-	// ----- Print: Files -----
 	fmt.Println()
 	fmt.Println("Largest Files")
 	w = tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
@@ -310,13 +386,9 @@ func main() {
 	w.Flush()
 
 	// ----- Summary line -----
-	ff := atomic.LoadInt64(&s.filesSeen)
-	dd := atomic.LoadInt64(&s.dirsSeen)
-	sk := atomic.LoadInt64(&s.skipped)
-	er := atomic.LoadInt64(&s.errors)
 	fmt.Println()
 	fmt.Printf("Scanned %d files in %d directories in %s (skipped=%d, errors=%d)\n",
-		ff, dd, time.Since(start).Truncate(time.Millisecond), sk, er)
+		ff, dd, elapsed, sk, er)
 }
 
 // ########### WALKER: DIRECTORY RECURSION ##################
