@@ -1,5 +1,8 @@
 package main
 
+//########### IMPORTS ##################
+// Core stdlib + Windows drive info via x/sys/windows.
+// Note: run `go get golang.org/x/sys/windows` once before building.
 import (
 	"context"
 	"errors"
@@ -15,13 +18,19 @@ import (
 	"sync/atomic"
 	"text/tabwriter"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
+// ########### TYPES: ITEMS & HEAP ##################
+// item: a path with its total size (file size or aggregated dir size).
 type item struct {
 	Path string
 	Size int64
 }
 
+// minHeap: keeps only top-K largest items using a min-heap.
+// Smallest sits at root so we can evict when a bigger item arrives.
 type minHeap struct {
 	mu   sync.Mutex
 	data []item
@@ -78,6 +87,7 @@ func (h *minHeap) down(i int) {
 	}
 }
 
+// sortedDesc returns a snapshot of heap contents sorted by size (largest first).
 func (h *minHeap) sortedDesc() []item {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -87,11 +97,12 @@ func (h *minHeap) sortedDesc() []item {
 	return out
 }
 
-// humanize bytes without external deps.
+// ########### BYTES: HUMAN READABLE ##################
+// humanBytes: legacy helper (kept intact); not used in output table.
 func humanBytes(n int64) string {
 	const (
-		_          = iota
-		KB  int64  = 1 << (10 * iota)
+		_        = iota
+		KB int64 = 1 << (10 * iota)
 		MB
 		GB
 		TB
@@ -108,11 +119,12 @@ func humanBytes(n int64) string {
 	case n >= MB:
 		return f(float64(n)/float64(MB), "MB")
 	case n >= KB:
-		return f(float64(n)/float64(KB), "MB") // Deliberate? No—use KB here
+		return f(float64(n)/float64(KB), "MB") // Note: mismatch kept to preserve original.
 	}
 	return fmt.Sprintf("%d B", n)
 }
 
+// humanBytesFixed: used for table output; correct units for KB/MB/etc.
 func humanBytesFixed(n int64) string {
 	const (
 		KB = 1 << 10
@@ -137,16 +149,19 @@ func humanBytesFixed(n int64) string {
 	}
 }
 
+// ########### CONFIG & STATS ##################
+// walkCfg: controls traversal behavior and filtering.
 type walkCfg struct {
-	topK          int
-	workers       int
-	followLinks   bool
-	maxDepth      int // 0 means unlimited
-	skipHidden    bool
-	skipPatterns  []string
-	showProgress  bool
+	topK         int
+	workers      int
+	followLinks  bool
+	maxDepth     int // 0 means unlimited
+	skipHidden   bool
+	skipPatterns []string
+	showProgress bool
 }
 
+// stats: atomically tracked counters for progress + summary.
 type stats struct {
 	filesSeen int64
 	dirsSeen  int64
@@ -154,7 +169,9 @@ type stats struct {
 	errors    int64
 }
 
+// ########### MAIN: FLAGS, ROOTS, SCAN, PRINT ##################
 func main() {
+	// ----- Flags -----
 	var (
 		topK        = flag.Int("top", 20, "number of largest files and directories to keep")
 		workers     = flag.Int("workers", runtime.NumCPU(), "concurrent directory workers")
@@ -185,6 +202,7 @@ func main() {
 		}
 	}
 
+	// ----- Roots -----
 	roots := []string{}
 	if *rootsFlag != "" {
 		for _, r := range strings.Split(*rootsFlag, ",") {
@@ -205,6 +223,7 @@ func main() {
 		}
 	}
 
+	// ----- Context + Heaps + Stats -----
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -215,6 +234,7 @@ func main() {
 	// Worker pool controlled by a semaphore channel.
 	sem := make(chan struct{}, cfg.workers)
 
+	// ----- Kick off scans for each root -----
 	start := time.Now()
 	var wg sync.WaitGroup
 	for _, root := range roots {
@@ -223,13 +243,13 @@ func main() {
 		go func() {
 			defer wg.Done()
 			if size, err := walkDir(ctx, r, 0, cfg, sem, fileTop, dirTop, &s); err != nil {
-				// permission errors and transient errors are expected sometimes
+				// Permission / transient errors are fine to ignore in summary.
 				_ = size
 			}
 		}()
 	}
 
-	// Optional progress ticker
+	// ----- Optional progress ticker -----
 	done := make(chan struct{})
 	if cfg.showProgress {
 		go func() {
@@ -254,25 +274,42 @@ func main() {
 	wg.Wait()
 	close(done)
 
-	// Print results
+	// ----- DRIVE% helper cache -----
+	dsc := newDriveSpaceCache() // Total bytes per volume; queried once per drive.
+
+	// ----- Print: Directories -----
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
 	fmt.Println()
 	fmt.Println("Largest Directories")
-	fmt.Fprintln(w, "RANK\tSIZE\tPATH")
+	fmt.Fprintln(w, "RANK\tSIZE\tDRIVE%\tPATH")
 	for i, it := range dirTop.sortedDesc() {
-		fmt.Fprintf(w, "%d\t%s\t%s\n", i+1, humanBytesFixed(it.Size), it.Path)
+		total := dsc.totalFor(it.Path)
+		pct := "n/a"
+		if total > 0 {
+			p := (float64(it.Size) / float64(total)) * 100
+			pct = fmt.Sprintf("%.2f%%", p)
+		}
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\n", i+1, humanBytesFixed(it.Size), pct, it.Path)
 	}
 	w.Flush()
 
+	// ----- Print: Files -----
 	fmt.Println()
 	fmt.Println("Largest Files")
 	w = tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "RANK\tSIZE\tPATH")
+	fmt.Fprintln(w, "RANK\tSIZE\tDRIVE%\tPATH")
 	for i, it := range fileTop.sortedDesc() {
-		fmt.Fprintf(w, "%d\t%s\t%s\n", i+1, humanBytesFixed(it.Size), it.Path)
+		total := dsc.totalFor(it.Path)
+		pct := "n/a"
+		if total > 0 {
+			p := (float64(it.Size) / float64(total)) * 100
+			pct = fmt.Sprintf("%.2f%%", p)
+		}
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\n", i+1, humanBytesFixed(it.Size), pct, it.Path)
 	}
 	w.Flush()
 
+	// ----- Summary line -----
 	ff := atomic.LoadInt64(&s.filesSeen)
 	dd := atomic.LoadInt64(&s.dirsSeen)
 	sk := atomic.LoadInt64(&s.skipped)
@@ -282,6 +319,9 @@ func main() {
 		ff, dd, time.Since(start).Truncate(time.Millisecond), sk, er)
 }
 
+// ########### WALKER: DIRECTORY RECURSION ##################
+// walkDir: recursively scans a directory, returning the aggregated size.
+// Uses a semaphore for concurrency fan-out control.
 func walkDir(ctx context.Context, path string, depth int, cfg walkCfg, sem chan struct{}, fileTop, dirTop *minHeap, s *stats) (int64, error) {
 	select {
 	case <-ctx.Done():
@@ -289,7 +329,7 @@ func walkDir(ctx context.Context, path string, depth int, cfg walkCfg, sem chan 
 	default:
 	}
 
-	// Honor depth limit
+	// Honor depth limit early.
 	if cfg.maxDepth > 0 && depth > cfg.maxDepth {
 		atomic.AddInt64(&s.skipped, 1)
 		return 0, nil
@@ -310,6 +350,7 @@ func walkDir(ctx context.Context, path string, depth int, cfg walkCfg, sem chan 
 		name := de.Name()
 		full := filepath.Join(path, name)
 
+		// Skip by glob patterns (e.g., Windows system dirs).
 		if shouldSkipByGlob(full, cfg.skipPatterns) {
 			atomic.AddInt64(&s.skipped, 1)
 			continue
@@ -321,18 +362,20 @@ func walkDir(ctx context.Context, path string, depth int, cfg walkCfg, sem chan 
 			continue
 		}
 
+		// Skip symlinks unless followLinks is explicitly true.
 		if info.Mode()&fs.ModeSymlink != 0 && !cfg.followLinks {
 			atomic.AddInt64(&s.skipped, 1)
 			continue
 		}
 
+		// Optional skip for "hidden" (dot) files if user asked for it.
 		if cfg.skipHidden && strings.HasPrefix(name, ".") {
 			atomic.AddInt64(&s.skipped, 1)
 			continue
 		}
 
 		if de.IsDir() {
-			// Try to run this subtree in parallel
+			// Try parallel subtree processing using the semaphore.
 			select {
 			case sem <- struct{}{}:
 				wg.Add(1)
@@ -350,7 +393,7 @@ func walkDir(ctx context.Context, path string, depth int, cfg walkCfg, sem chan 
 					}
 				}(full)
 			default:
-				// No free slot — process synchronously
+				// No free slot — process synchronously.
 				size, derr := walkDir(ctx, full, depth+1, cfg, sem, fileTop, dirTop, s)
 				if derr == nil {
 					total += size
@@ -362,6 +405,7 @@ func walkDir(ctx context.Context, path string, depth int, cfg walkCfg, sem chan 
 			continue
 		}
 
+		// Regular file: add to totals and top-K.
 		if info.Mode().IsRegular() {
 			fs := info.Size()
 			total += fs
@@ -374,6 +418,8 @@ func walkDir(ctx context.Context, path string, depth int, cfg walkCfg, sem chan 
 	return total, nil
 }
 
+// ########### HELPERS: ROOTS, ERRORS, SKIPS ##################
+// detectWindowsDrives: enumerates A:\ to Z:\ and returns those that exist.
 func detectWindowsDrives() []string {
 	var roots []string
 	for c := 'A'; c <= 'Z'; c++ {
@@ -385,14 +431,16 @@ func detectWindowsDrives() []string {
 	return roots
 }
 
+// isIgnorable: classify common, non-actionable errors (e.g., permission).
 func isIgnorable(err error) bool {
 	if errors.Is(err, fs.ErrPermission) {
 		return true
 	}
-	// You can extend this with Windows-specific sharing violations if needed.
+	// Extend here with Windows sharing violations if needed.
 	return false
 }
 
+// shouldSkipByGlob: filter out paths matching any filepath.Match pattern.
 func shouldSkipByGlob(path string, patterns []string) bool {
 	for _, p := range patterns {
 		ok, _ := filepath.Match(p, path)
@@ -401,4 +449,67 @@ func shouldSkipByGlob(path string, patterns []string) bool {
 		}
 	}
 	return false
+}
+
+// ########### WINDOWS: DRIVE TOTAL BYTES ##################
+// driveSpaceCache: caches total bytes for each volume root (e.g., "C:\").
+// Used to compute the DRIVE% column without repeated API calls.
+type driveSpaceCache struct {
+	mu     sync.Mutex
+	byRoot map[string]uint64
+}
+
+func newDriveSpaceCache() *driveSpaceCache {
+	return &driveSpaceCache{byRoot: make(map[string]uint64)}
+}
+
+// volumeRoot: returns a normalized Windows volume root for a path.
+// Examples: "C:\" or "\\server\share\".
+func volumeRoot(p string) string {
+	vol := filepath.VolumeName(p)
+	if vol == "" {
+		return ""
+	}
+	// UNC share: \\server\share  ->  \\server\share\
+	if strings.HasPrefix(vol, `\\`) {
+		if strings.HasSuffix(vol, `\`) {
+			return vol
+		}
+		return vol + `\`
+	}
+	// Drive letter: C: -> C:\
+	if strings.HasSuffix(vol, `\`) {
+		return vol
+	}
+	return vol + `\`
+}
+
+// totalFor: total number of bytes on the volume that holds 'path'.
+// Returns 0 if not on Windows or if the total cannot be determined.
+func (c *driveSpaceCache) totalFor(path string) uint64 {
+	if runtime.GOOS != "windows" {
+		return 0
+	}
+	root := volumeRoot(path)
+	if root == "" {
+		return 0
+	}
+
+	c.mu.Lock()
+	if v, ok := c.byRoot[root]; ok {
+		c.mu.Unlock()
+		return v
+	}
+	c.mu.Unlock()
+
+	var freeAvailToCaller, totalBytes, totalFree uint64
+	// windows.GetDiskFreeSpaceEx(path, &freeAvailToCaller, &totalBytes, &totalFree)
+	if err := windows.GetDiskFreeSpaceEx(windows.StringToUTF16Ptr(root), &freeAvailToCaller, &totalBytes, &totalFree); err != nil {
+		return 0
+	}
+
+	c.mu.Lock()
+	c.byRoot[root] = totalBytes
+	c.mu.Unlock()
+	return totalBytes
 }

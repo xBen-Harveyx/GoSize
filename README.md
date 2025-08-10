@@ -3,7 +3,6 @@
 GoSize is a fast command-line utility written in Go that scans a Windows system and reports the largest directories and files on each drive.  
 It’s designed for quick disk space analysis so you can identify space hogs for cleanup.
 
----
 
 ## Features
 - Scans one or more drives or directories concurrently
@@ -13,7 +12,6 @@ It’s designed for quick disk space analysis so you can identify space hogs for
 - Optional skip filters (hidden files, glob patterns, symlinks)
 - Progress reporting during long scans
 
----
 
 ## Installation
 ```powershell
