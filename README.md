@@ -24,7 +24,7 @@ It’s designed for quick disk space analysis so you can identify space hogs for
 ## Installation
 ```powershell
 # Clone the repo
-git clone https://github.com/YourUser/GoSize.git
+git clone
 cd GoSize
 
 # Build
